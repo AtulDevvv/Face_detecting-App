@@ -2,67 +2,62 @@
 
 import React, { useRef, useState, useEffect } from "react";
 import Webcam from "react-webcam";
-import * as faceMesh from "@tensorflow-models/facemesh";
-import * as tf from "@tensorflow/tfjs";
-import "@tensorflow/tfjs-backend-webgl";
+import * as faceapi from "face-api.js";
 
 export default function FaceTrackingApp() {
   const webcamRef = useRef(null);
-  const canvasRef = useRef(null);
+  const displayCanvasRef = useRef(null); // For live display without landmarks
+  const recordingCanvasRef = useRef(null); // For recording with landmarks
   const [isRecording, setIsRecording] = useState(false);
   const [videoBlob, setVideoBlob] = useState(null);
 
   let mediaRecorder = useRef(null);
   let recordedChunks = useRef([]);
 
-  // Initialize the FaceMesh model and start detection
-  const runFaceMesh = async () => {
-    await tf.setBackend("webgl");
-    await tf.ready();
+  // Load FaceAPI.js models
+  const loadModels = async () => {
+    const MODEL_URL = "/models"; // Path to models directory
+    await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+    await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+  };
 
-    const net = await faceMesh.load();
-
-    setInterval(() => {
+  // Start Face Detection
+  const startFaceDetection = async () => {
+    setInterval(async () => {
       if (webcamRef.current && webcamRef.current.video.readyState === 4) {
-        detectFace(net);
+        const video = webcamRef.current.video;
+        const displaySize = {
+          width: video.videoWidth,
+          height: video.videoHeight,
+        };
+
+        // Adjust canvas sizes
+        faceapi.matchDimensions(displayCanvasRef.current, displaySize);
+        faceapi.matchDimensions(recordingCanvasRef.current, displaySize);
+
+        const detections = await faceapi
+          .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+          .withFaceLandmarks();
+
+        const resizedDetections = faceapi.resizeResults(detections, displaySize);
+
+        // Draw video feed on the display canvas
+        const displayCtx = displayCanvasRef.current.getContext("2d");
+        displayCtx.clearRect(0, 0, displayCanvasRef.current.width, displayCanvasRef.current.height);
+        displayCtx.drawImage(video, 0, 0, displaySize.width, displaySize.height);
+
+        // Draw landmarks only on the recording canvas
+        const recordingCtx = recordingCanvasRef.current.getContext("2d");
+        recordingCtx.clearRect(0, 0, recordingCanvasRef.current.width, recordingCanvasRef.current.height);
+        recordingCtx.drawImage(video, 0, 0, displaySize.width, displaySize.height);
+        faceapi.draw.drawFaceLandmarks(recordingCanvasRef.current, resizedDetections);
       }
     }, 100);
   };
 
-  // Face Detection Function
-  const detectFace = async (net) => {
-    const video = webcamRef.current.video;
-    const videoWidth = video.videoWidth;
-    const videoHeight = video.videoHeight;
-
-    // Set canvas dimensions
-    canvasRef.current.width = videoWidth;
-    canvasRef.current.height = videoHeight;
-
-    const ctx = canvasRef.current.getContext("2d");
-    ctx.clearRect(0, 0, videoWidth, videoHeight); // Clear canvas
-
-    // Draw video feed on canvas (not visible during recording)
-    ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
-
-    // Detect faces
-    const faces = await net.estimateFaces(video);
-
-    // Draw face landmarks
-    faces.forEach((face) => {
-      const keypoints = face.scaledMesh;
-      keypoints.forEach(([x, y]) => {
-        ctx.beginPath();
-        ctx.arc(x, y, 2, 0, Math.PI * 2);
-        ctx.fillStyle = "red";
-        ctx.fill();
-      });
-    });
-  };
-
   // Start Recording
   const startRecording = () => {
-    const canvasStream = canvasRef.current.captureStream(30); // 30 FPS
+    const canvasStream = recordingCanvasRef.current.captureStream(30); // 30 FPS
     mediaRecorder.current = new MediaRecorder(canvasStream, {
       mimeType: "video/webm",
     });
@@ -101,12 +96,14 @@ export default function FaceTrackingApp() {
   };
 
   useEffect(() => {
-    runFaceMesh();
+    loadModels().then(() => {
+      startFaceDetection();
+    });
   }, []);
 
   return (
     <div className="flex flex-col items-center space-y-4">
-      {/* Webcam and Hidden Canvas */}
+      {/* Webcam and Display Canvas */}
       <div className="relative">
         <Webcam
           ref={webcamRef}
@@ -114,10 +111,18 @@ export default function FaceTrackingApp() {
           className="rounded-lg"
           style={{ display: "block" }}
         />
-        {/* Hidden Canvas */}
         <canvas
-          ref={canvasRef}
-          className="hidden" // Canvas is hidden during recording
+          ref={displayCanvasRef}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            zIndex: 1,
+          }}
+        ></canvas>
+        <canvas
+          ref={recordingCanvasRef}
+          style={{ display: "none" }} // Hidden during live display
         ></canvas>
       </div>
 
