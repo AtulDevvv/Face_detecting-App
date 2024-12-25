@@ -6,13 +6,13 @@ import * as faceapi from "face-api.js";
 
 export default function FaceTrackingApp() {
   const webcamRef = useRef(null);
-  const displayCanvasRef = useRef(null); // For live display without landmarks
-  const recordingCanvasRef = useRef(null); // For recording with landmarks
+  const canvasRef = useRef(null);
   const [isRecording, setIsRecording] = useState(false);
   const [videoBlob, setVideoBlob] = useState(null);
 
   let mediaRecorder = useRef(null);
   let recordedChunks = useRef([]);
+  let animationFrameId = useRef(null);
 
   // Load FaceAPI.js models
   const loadModels = async () => {
@@ -23,7 +23,7 @@ export default function FaceTrackingApp() {
 
   // Start Face Detection
   const startFaceDetection = async () => {
-    setInterval(async () => {
+    const detectFaces = async () => {
       if (webcamRef.current && webcamRef.current.video.readyState === 4) {
         const video = webcamRef.current.video;
         const displaySize = {
@@ -31,9 +31,14 @@ export default function FaceTrackingApp() {
           height: video.videoHeight,
         };
 
-        // Adjust canvas sizes
-        faceapi.matchDimensions(displayCanvasRef.current, displaySize);
-        faceapi.matchDimensions(recordingCanvasRef.current, displaySize);
+        // Adjust canvas size only once
+        if (
+          canvasRef.current.width !== displaySize.width ||
+          canvasRef.current.height !== displaySize.height
+        ) {
+          canvasRef.current.width = displaySize.width;
+          canvasRef.current.height = displaySize.height;
+        }
 
         const detections = await faceapi
           .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
@@ -41,23 +46,31 @@ export default function FaceTrackingApp() {
 
         const resizedDetections = faceapi.resizeResults(detections, displaySize);
 
-        // Draw video feed on the display canvas
-        const displayCtx = displayCanvasRef.current.getContext("2d");
-        displayCtx.clearRect(0, 0, displayCanvasRef.current.width, displayCanvasRef.current.height);
-        displayCtx.drawImage(video, 0, 0, displaySize.width, displaySize.height);
+        const ctx = canvasRef.current.getContext("2d");
+        ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
 
-        // Draw landmarks only on the recording canvas
-        const recordingCtx = recordingCanvasRef.current.getContext("2d");
-        recordingCtx.clearRect(0, 0, recordingCanvasRef.current.width, recordingCanvasRef.current.height);
-        recordingCtx.drawImage(video, 0, 0, displaySize.width, displaySize.height);
-        faceapi.draw.drawFaceLandmarks(recordingCanvasRef.current, resizedDetections);
+        // Draw video feed on the canvas
+        ctx.drawImage(video, 0, 0, displaySize.width, displaySize.height);
+
+        // Draw landmarks
+        faceapi.draw.drawFaceLandmarks(canvasRef.current, resizedDetections);
       }
-    }, 100);
+
+      // Request the next animation frame
+      animationFrameId.current = requestAnimationFrame(detectFaces);
+    };
+
+    detectFaces(); // Start the loop
+  };
+
+  // Stop Face Detection
+  const stopFaceDetection = () => {
+    cancelAnimationFrame(animationFrameId.current);
   };
 
   // Start Recording
   const startRecording = () => {
-    const canvasStream = recordingCanvasRef.current.captureStream(30); // 30 FPS
+    const canvasStream = canvasRef.current.captureStream(30); // 30 FPS
     mediaRecorder.current = new MediaRecorder(canvasStream, {
       mimeType: "video/webm",
     });
@@ -99,30 +112,36 @@ export default function FaceTrackingApp() {
     loadModels().then(() => {
       startFaceDetection();
     });
+
+    return () => {
+      stopFaceDetection(); // Clean up on unmount
+    };
   }, []);
 
   return (
     <div className="flex flex-col items-center space-y-4">
-      {/* Webcam and Display Canvas */}
+      {/* Video and Canvas */}
       <div className="relative">
         <Webcam
           ref={webcamRef}
           muted
-          className="rounded-lg"
-          style={{ display: "block" }}
-        />
-        <canvas
-          ref={displayCanvasRef}
+          className="absolute top-0 left-0 rounded-lg"
           style={{
             position: "absolute",
             top: 0,
             left: 0,
+            opacity: 0, // Hide the actual webcam
+          }}
+        />
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: "relative",
+            width: "100%",
+            maxWidth: "640px",
+            borderRadius: "8px",
             zIndex: 1,
           }}
-        ></canvas>
-        <canvas
-          ref={recordingCanvasRef}
-          style={{ display: "none" }} // Hidden during live display
         ></canvas>
       </div>
 
@@ -161,6 +180,7 @@ export default function FaceTrackingApp() {
             src={URL.createObjectURL(videoBlob)}
             controls
             className="mt-2 rounded-lg"
+            style={{ maxWidth: "100%" }}
           ></video>
         </div>
       )}
